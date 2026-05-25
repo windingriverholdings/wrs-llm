@@ -60,8 +60,17 @@ type RouteRequest struct {
 // cost-audit logging.
 type RouteDecision struct {
 	Provider Provider
-	Model    string
-	Reason   string
+
+	// Model is ADVISORY. The providers in this module are pre-bound to a model
+	// at construction (NewOllamaProvider / NewClaudeProvider) and send that
+	// construction-time model on the wire, NOT this field. Model is here for
+	// logging, cost-audit, and callers that resolve a provider+model pair
+	// themselves. On the forced-provider paths (sensitive, kill-switch,
+	// override-by-provider-name) Model may be "" when the task-kind route points
+	// at a different provider — see modelForTaskKind.
+	Model string
+
+	Reason string
 }
 
 // Router resolves RouteRequests to RouteDecisions under a layered policy.
@@ -69,9 +78,37 @@ type Router struct {
 	cfg RouterConfig
 }
 
-// NewRouter constructs a Router from an injected config.
+// Validate reports whether the config is structurally capable of routing. It
+// fails LOUD (returns a wrapped ErrInvalidConfig) when:
+//   - the config has no routing surface at all (no Routes, no Local, no Cloud),
+//     so every request would dead-end; or
+//   - any Routes entry carries a nil Provider, which would nil-panic at the
+//     caller's Generate.
+func (c RouterConfig) Validate() error {
+	if len(c.Routes) == 0 && c.Local == nil && c.Cloud == nil {
+		return fmt.Errorf("%w: no routes, no local provider, and no cloud provider configured", ErrInvalidConfig)
+	}
+	for kind, route := range c.Routes {
+		if route.Provider == nil {
+			return fmt.Errorf("%w: route for %s has a nil provider", ErrInvalidConfig, kind)
+		}
+	}
+	return nil
+}
+
+// NewRouter constructs a Router from an injected config. It does NOT validate;
+// callers that want construction-time validation should use NewRouterValidated.
 func NewRouter(cfg RouterConfig) *Router {
 	return &Router{cfg: cfg}
+}
+
+// NewRouterValidated constructs a Router and fails LOUD if the config is
+// structurally broken (see RouterConfig.Validate).
+func NewRouterValidated(cfg RouterConfig) (*Router, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return &Router{cfg: cfg}, nil
 }
 
 // Route applies the layered policy, highest precedence first:
@@ -146,6 +183,11 @@ func (r *Router) Route(req RouteRequest) (RouteDecision, error) {
 
 	// 5. Deterministic task-kind map.
 	if route, ok := r.cfg.Routes[req.TaskKind]; ok {
+		// Guard against a matched route with a nil provider: returning it as a
+		// success would nil-panic at the caller's Generate. Fail LOUD instead.
+		if route.Provider == nil {
+			return RouteDecision{}, fmt.Errorf("%w: route for %s has nil provider", ErrNoRoute, req.TaskKind)
+		}
 		return RouteDecision{
 			Provider: route.Provider,
 			Model:    route.Model,

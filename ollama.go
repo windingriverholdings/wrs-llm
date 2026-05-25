@@ -79,13 +79,17 @@ func (p *OllamaProvider) Generate(ctx context.Context, prompt, system string) (s
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		return "", fmt.Errorf("ollama: status %d: %s", resp.StatusCode, respBody)
 	}
 
 	var result ollamaChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("decode ollama response: %w", err)
+	}
+
+	if result.Message.Content == "" {
+		return "", fmt.Errorf("%w: model %s", ErrEmptyCompletion, p.model)
 	}
 
 	slog.Info("ollama response", "model", p.model, "prompt_len", len(prompt), "response_len", len(result.Message.Content))

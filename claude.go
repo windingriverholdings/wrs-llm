@@ -93,7 +93,7 @@ func (p *ClaudeProvider) Generate(ctx context.Context, prompt, system string) (s
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		return "", fmt.Errorf("claude: status %d: %s", resp.StatusCode, respBody)
 	}
 
@@ -102,10 +102,10 @@ func (p *ClaudeProvider) Generate(ctx context.Context, prompt, system string) (s
 		return "", fmt.Errorf("decode claude response: %w", err)
 	}
 
-	content := ""
-	if len(result.Content) > 0 {
-		content = result.Content[0].Text
+	if len(result.Content) == 0 || result.Content[0].Text == "" {
+		return "", fmt.Errorf("%w: model %s", ErrEmptyCompletion, p.model)
 	}
+	content := result.Content[0].Text
 
 	slog.Info("claude response", "model", p.model, "prompt_len", len(prompt), "response_len", len(content))
 	return content, nil

@@ -266,6 +266,92 @@ func TestRoute_SensitiveBeatsForceAllClaudeKillSwitch(t *testing.T) {
 	}
 }
 
+func TestRouterConfig_Validate_EmptyConfigIsError(t *testing.T) {
+	// A structurally-empty config (no routes, no local, no cloud) cannot route
+	// anything and must fail LOUD at construction.
+	cfg := RouterConfig{}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for empty config, got nil")
+	}
+}
+
+func TestRouterConfig_Validate_NilProviderRouteIsError(t *testing.T) {
+	// A route whose Provider is nil would nil-panic at Generate; reject it.
+	cfg := RouterConfig{
+		Routes: map[TaskKind]Route{
+			Extract: {Provider: nil, Model: "qwen3:8b"},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for route with nil provider, got nil")
+	}
+}
+
+func TestRouterConfig_Validate_GoodConfigPasses(t *testing.T) {
+	cfg := newTestConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid config to pass, got %v", err)
+	}
+}
+
+func TestNewRouterValidated_RejectsBrokenConfig(t *testing.T) {
+	_, err := NewRouterValidated(RouterConfig{})
+	if err == nil {
+		t.Fatal("expected NewRouterValidated to reject empty config")
+	}
+}
+
+func TestNewRouterValidated_AcceptsGoodConfig(t *testing.T) {
+	r, err := NewRouterValidated(newTestConfig())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r == nil {
+		t.Fatal("expected router, got nil")
+	}
+}
+
+func TestRoute_TaskKindNilProviderReturnsTypedError(t *testing.T) {
+	// A matched task-kind route whose Provider is nil must return a typed error,
+	// NOT a RouteDecision{Provider:nil} "success" that nil-panics at Generate.
+	cfg := newTestConfig()
+	cfg.Routes[Caption] = Route{Provider: nil, Model: "llama3.1:8b"}
+	r := NewRouter(cfg)
+
+	dec, err := r.Route(RouteRequest{TaskKind: Caption})
+	if err == nil {
+		t.Fatal("expected error for matched route with nil provider, got nil")
+	}
+	if !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("expected ErrNoRoute wrap, got %v", err)
+	}
+	if dec.Provider != nil {
+		t.Fatalf("expected no provider on nil-provider route, got %v", dec.Provider)
+	}
+}
+
+func TestModelForTaskKind_EmptyFallbackOnProviderMismatch(t *testing.T) {
+	// modelForTaskKind returns "" when the configured route's provider differs
+	// from the forced provider (override-by-provider-name path). This pins the
+	// advisory-Model contract: RouteDecision.Model is "" so the provider's own
+	// construction-time model governs.
+	cfg := newTestConfig()
+	r := NewRouter(cfg)
+
+	// Override by provider name routes to cloud, but the task-kind map for
+	// Extract points at local -> provider mismatch -> empty model string.
+	dec, err := r.Route(RouteRequest{TaskKind: Extract, Override: "cloud-claude"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dec.Provider != cfg.Cloud {
+		t.Fatal("expected override by provider name to route to cloud")
+	}
+	if dec.Model != "" {
+		t.Fatalf("expected empty advisory model on provider mismatch, got %q", dec.Model)
+	}
+}
+
 func TestRoute_NeedsToolsBeatsEverything(t *testing.T) {
 	// Agentic refusal is absolute — even with an override and kill switch set.
 	cfg := newTestConfig()

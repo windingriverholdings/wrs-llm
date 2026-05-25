@@ -3,6 +3,7 @@ package wrsllm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,6 +113,33 @@ func TestOllamaProvider_GenerateNon200(t *testing.T) {
 	}
 }
 
+func TestOllamaProvider_GenerateEmptyCompletionIsError(t *testing.T) {
+	// HTTP 200 with a semantically empty assistant message must be reported as
+	// an error, not silent ("", nil) success.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaChatResponse{
+			Message: ollamaChatMsg{Role: "assistant", Content: ""},
+		})
+	}))
+	defer srv.Close()
+
+	p := NewOllamaProvider(srv.URL, "qwen3:8b", 5*time.Second)
+	out, err := p.Generate(context.Background(), "hi", "")
+	if err == nil {
+		t.Fatal("expected error on empty completion, got nil")
+	}
+	if !errors.Is(err, ErrEmptyCompletion) {
+		t.Fatalf("expected ErrEmptyCompletion, got %v", err)
+	}
+	if out != "" {
+		t.Fatalf("expected empty output on error, got %q", out)
+	}
+	if !strings.Contains(err.Error(), "qwen3:8b") {
+		t.Fatalf("expected model name in error, got %v", err)
+	}
+}
+
 func TestNewClaudeProvider_Defaults(t *testing.T) {
 	p := NewClaudeProvider("sk-test", "claude-sonnet-4", 0)
 	if p == nil {
@@ -158,6 +186,51 @@ func TestClaudeProvider_Generate(t *testing.T) {
 	}
 	if out != "claude says hi" {
 		t.Fatalf("expected 'claude says hi', got %q", out)
+	}
+}
+
+func TestClaudeProvider_GenerateEmptyContentIsError(t *testing.T) {
+	// 200 with no content blocks must be an error, not silent success.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(claudeResponse{}) // empty Content slice
+	}))
+	defer srv.Close()
+
+	p := NewClaudeProvider("sk-test", "claude-sonnet-4", 5*time.Second)
+	p.baseURL = srv.URL
+	out, err := p.Generate(context.Background(), "hi", "")
+	if err == nil {
+		t.Fatal("expected error on empty content blocks, got nil")
+	}
+	if !errors.Is(err, ErrEmptyCompletion) {
+		t.Fatalf("expected ErrEmptyCompletion, got %v", err)
+	}
+	if out != "" {
+		t.Fatalf("expected empty output on error, got %q", out)
+	}
+	if !strings.Contains(err.Error(), "claude-sonnet-4") {
+		t.Fatalf("expected model name in error, got %v", err)
+	}
+}
+
+func TestClaudeProvider_GenerateEmptyTextIsError(t *testing.T) {
+	// 200 with a present-but-blank text block is equally a silent empty.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := claudeResponse{}
+		resp.Content = []struct {
+			Text string `json:"text"`
+		}{{Text: ""}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := NewClaudeProvider("sk-test", "claude-sonnet-4", 5*time.Second)
+	p.baseURL = srv.URL
+	_, err := p.Generate(context.Background(), "hi", "")
+	if !errors.Is(err, ErrEmptyCompletion) {
+		t.Fatalf("expected ErrEmptyCompletion for blank text block, got %v", err)
 	}
 }
 

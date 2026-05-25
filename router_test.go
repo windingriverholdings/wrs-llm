@@ -212,6 +212,18 @@ func TestRoute_KillSwitchForceAllLocal(t *testing.T) {
 	}
 }
 
+func TestRoute_KillSwitchForceAllLocalNoLocalReturnsError(t *testing.T) {
+	cfg := newTestConfig()
+	cfg.Local = nil
+	cfg.KillSwitch = ForceAllLocal
+	r := NewRouter(cfg)
+
+	_, err := r.Route(RouteRequest{TaskKind: Summarize})
+	if !errors.Is(err, ErrNoLocalProvider) {
+		t.Fatalf("expected ErrNoLocalProvider, got %v", err)
+	}
+}
+
 func TestRoute_KillSwitchForceAllClaude(t *testing.T) {
 	cfg := newTestConfig()
 	cfg.KillSwitch = ForceAllClaude
